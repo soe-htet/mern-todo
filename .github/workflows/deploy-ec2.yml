@@ -1,0 +1,71 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          echo "✅ Frontend built"
+
+      - name: Package release
+        run: |
+          tar -czf release.tgz backend frontend/dist
+          echo "✅ Packaged release.tgz"
+
+      - name: Copy files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "release.tgz"
+          target: "/var/www/mern-todo"
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: MONGODB_URI=${{ secrets.MONGODB_URI }}
+          script: |
+            set -e
+            cd /var/www/mern-todo
+            echo "📦 Extracting release"
+            tar -xzf release.tgz
+            rm -rf backend/public
+            mkdir -p backend/public
+            cp -r frontend/dist/* backend/public/
+
+            cd backend
+            if [ ! -f .env ]; then
+              echo "⚙️ Creating .env file"
+              echo "PORT=4000" > .env
+              echo "MONGODB_URI=${MONGODB_URI}" >> .env
+              echo "CORS_ORIGIN=*" >> .env
+            fi
+
+            echo "📦 Installing dependencies"
+            npm ci
+
+            echo "🚀 Restarting PM2"
+            pm2 startOrReload ecosystem.config.js || pm2 start ecosystem.config.js
+            pm2 save
+            echo "✅ Deployment complete"
